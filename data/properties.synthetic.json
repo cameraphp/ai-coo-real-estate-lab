@@ -1,0 +1,79 @@
+[
+  {
+    "property_id": "prop-demo-001",
+    "city": "Austin",
+    "neighborhood": "Demo District North",
+    "list_price": 599000,
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "property_type": "single_family",
+    "summary": "Synthetic three-bedroom home in Austin Demo District with open floor plan and fictional park access.",
+    "is_synthetic": true
+  },
+  {
+    "property_id": "prop-demo-002",
+    "city": "Austin",
+    "neighborhood": "Demo District Central",
+    "list_price": 645000,
+    "bedrooms": 4,
+    "bathrooms": 3,
+    "property_type": "single_family",
+    "summary": "Synthetic four-bedroom Austin home near fictional light-rail stop and community garden.",
+    "is_synthetic": true
+  },
+  {
+    "property_id": "prop-demo-003",
+    "city": "Austin",
+    "neighborhood": "Demo District East",
+    "list_price": 710000,
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "property_type": "townhouse",
+    "summary": "Synthetic three-bedroom townhouse in East Austin Demo District with rooftop deck.",
+    "is_synthetic": true
+  },
+  {
+    "property_id": "prop-demo-004",
+    "city": "Phoenix",
+    "neighborhood": "Sample Grove",
+    "list_price": 485000,
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "property_type": "single_family",
+    "summary": "Synthetic Phoenix home in Sample Grove with pool-sized yard and fictional view.",
+    "is_synthetic": true
+  },
+  {
+    "property_id": "prop-demo-005",
+    "city": "Phoenix",
+    "neighborhood": "Example Heights",
+    "list_price": 560000,
+    "bedrooms": 4,
+    "bathrooms": 3,
+    "property_type": "single_family",
+    "summary": "Synthetic four-bedroom Phoenix home in Example Heights near fictional school campus.",
+    "is_synthetic": true
+  },
+  {
+    "property_id": "prop-demo-006",
+    "city": "Denver",
+    "neighborhood": "Demo Ridge",
+    "list_price": 625000,
+    "bedrooms": 3,
+    "bathrooms": 2,
+    "property_type": "condo",
+    "summary": "Synthetic Denver condo in Demo Ridge with fictional mountain-facing balcony.",
+    "is_synthetic": true
+  },
+  {
+    "property_id": "prop-demo-007",
+    "city": "Denver",
+    "neighborhood": "Sample Hollow",
+    "list_price": 680000,
+    "bedrooms": 4,
+    "bathrooms": 3,
+    "property_type": "single_family",
+    "summary": "Synthetic Denver single-family in Sample Hollow with fictional trail access.",
+    "is_synthetic": true
+  }
+]

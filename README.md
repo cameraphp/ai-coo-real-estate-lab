@@ -31,15 +31,15 @@ Week 1 builds a small, reproducible, interview-defensible local demo of a real-e
 
 ```mermaid
 flowchart LR
-    A[Webhook\nPOST /api/v1/leads/webhook] --> B[Validation & Normalization]
-    B --> C[Synthetic Property Retrieval]
-    C --> D[Mock LLM Adapter]
-    D --> E[Proposal Schema Validation]
-    E --> F[Approval Gate\nPENDING_APPROVAL]
-    F --> G[In-Memory Workflow Store]
-    H[GET /api/v1/workflows/{id}] --> G
-    I[POST /api/v1/workflows/{id}/approval] --> F
-    F -- approve/reject --> G
+    A["Webhook<br/>POST /api/v1/leads/webhook"] --> B["Validation & Normalization"]
+    B --> C["Synthetic Property Retrieval"]
+    C --> D["Mock LLM Adapter"]
+    D --> E["Proposal Schema Validation"]
+    E --> F["Approval Gate<br/>PENDING_APPROVAL"]
+    F --> G["In-Memory Workflow Store"]
+    H["GET /api/v1/workflows/:workflow_id"] --> G
+    I["POST /api/v1/workflows/:workflow_id/approval"] --> F
+    F -->|approve or reject| G
 ```
 
 Every transition is traceable via `correlation_id`, `lead_id`, and `workflow_id`. The in-memory store is intentional for Week 1; the README below lists durable storage as future work.

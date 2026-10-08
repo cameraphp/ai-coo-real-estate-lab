@@ -6,7 +6,7 @@ from app.main import build_app
 
 
 def _client() -> TestClient:
-    return TestClient(build_app())
+    return TestClient(build_app(), headers={"X-Demo-Actor-ID": "tenant-a-operator"})
 
 
 DEMO_PAYLOAD = {

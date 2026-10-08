@@ -3,14 +3,30 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import FastAPI
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.adapters.calendar_mock import MockCalendarAdapter
+from app.adapters.crm_mock import MockCrmAdapter
+from app.adapters.messaging_mock import MockMessagingAdapter
 from app.adapters.mock_llm import MockLeadProposalAgent
+from app.adapters.tools import ToolAdapters
+from app.api.routes import register_exception_handlers
 from app.api.routes import router as api_router
 from app.observability.logging import configure_logging
+from app.repositories.audit import InMemoryAuditRepository
+from app.repositories.idempotency import InMemoryIdempotencyRepository
 from app.repositories.properties import SyntheticJsonPropertyRepository
 from app.repositories.workflows import InMemoryWorkflowRepository
+from app.services.audit_service import AuditService
 from app.services.property_retrieval import PropertyRetrievalService
+from app.services.tool_execution_service import ToolExecutionService
+from app.services.tool_executor import (
+    MAX_ATTEMPTS_LIMIT,
+    MAX_TIMEOUT_SECONDS,
+    BoundedToolExecutor,
+    ToolExecutionPolicy,
+)
 from app.services.workflow_service import WorkflowService
 
 
@@ -26,24 +42,39 @@ class AppSettings(BaseSettings):
     log_level: str = "INFO"
     agent_provider: str = "mock"
     properties_catalog_path: Path | None = None
+    tool_max_attempts: int = Field(default=2, ge=1, le=MAX_ATTEMPTS_LIMIT)
+    tool_timeout_seconds: float = Field(default=0.25, gt=0, le=MAX_TIMEOUT_SECONDS)
 
 
-def build_app(settings: AppSettings | None = None) -> FastAPI:
+def default_tool_adapters() -> ToolAdapters:
+    return ToolAdapters(
+        crm=MockCrmAdapter(),
+        calendar=MockCalendarAdapter(),
+        messaging=MockMessagingAdapter(),
+    )
+
+
+def build_app(
+    settings: AppSettings | None = None,
+    tool_adapters: ToolAdapters | None = None,
+) -> FastAPI:
     settings = settings or AppSettings()
     configure_logging(settings.log_level)
 
     app = FastAPI(
         title="ai-coo-real-estate-lab",
-        version="0.1.0",
+        version="0.2.0",
         description=(
-            "Week 1 MVP: Controlled local demo of a real-estate operations assistant "
-            "with synthetic data, explicit contracts, and a human approval gate."
+            "Week 2: Controlled local demo of a real-estate operations assistant with "
+            "synthetic data, a human approval gate, local mock tools, demo tenant/role "
+            "boundaries, idempotency, and a queryable audit trail. No external side effects."
         ),
     )
 
     property_repo = SyntheticJsonPropertyRepository(settings.properties_catalog_path)
     workflow_repo = InMemoryWorkflowRepository()
     retrieval = PropertyRetrievalService(property_repo)
+    audit_service = AuditService(InMemoryAuditRepository())
 
     if settings.agent_provider == "mock":
         agent = MockLeadProposalAgent()
@@ -54,13 +85,28 @@ def build_app(settings: AppSettings | None = None) -> FastAPI:
         retrieval_service=retrieval,
         agent=agent,
         workflow_repo=workflow_repo,
+        audit=audit_service,
+    )
+    tool_execution_service = ToolExecutionService(
+        workflow_repo=workflow_repo,
+        idempotency_repo=InMemoryIdempotencyRepository(),
+        adapters=tool_adapters or default_tool_adapters(),
+        executor=BoundedToolExecutor(
+            ToolExecutionPolicy(
+                max_attempts=settings.tool_max_attempts,
+                timeout_seconds=settings.tool_timeout_seconds,
+            )
+        ),
+        audit=audit_service,
     )
 
     app.state.workflow_service = workflow_service
+    app.state.tool_execution_service = tool_execution_service
     app.state.agent_provider = agent.provider_name
     app.state.settings = settings
 
     app.include_router(api_router)
+    register_exception_handlers(app)
 
     return app
 

@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import threading
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from app.adapters.llm import LeadProposalAgent, LeadProposalAgentError
 from app.domain.models import (
     AgentProposal,
+    ApprovalDecision,
     ApprovalMetadata,
     ApprovalRequest,
+    AuditEvent,
+    AuditEventType,
+    AuditOutcome,
+    DemoPrincipal,
     InboundLead,
     NormalizedLead,
     RankedProperty,
@@ -18,6 +24,8 @@ from app.domain.models import (
 from app.domain.workflow import can_transition, next_state_for
 from app.observability.logging import SafeLoggerAdapter
 from app.repositories.workflows import WorkflowRepository
+from app.security.tool_policy import AuthorizationError, Capability, require_capability
+from app.services.audit_service import AuditService
 from app.services.lead_normalizer import LeadNormalizationError, normalize_lead
 from app.services.property_retrieval import PropertyRetrievalService
 
@@ -40,17 +48,22 @@ class WorkflowService:
         retrieval_service: PropertyRetrievalService,
         agent: LeadProposalAgent,
         workflow_repo: WorkflowRepository,
+        audit: AuditService,
     ) -> None:
         self._retrieval = retrieval_service
         self._agent = agent
         self._workflows = workflow_repo
+        self._audit = audit
+        self._decision_lock = threading.Lock()
 
     def ingest_lead(
         self,
+        principal: DemoPrincipal,
         inbound: InboundLead,
         correlation_id: str,
         logger: SafeLoggerAdapter,
     ) -> Workflow:
+        require_capability(principal, Capability.CREATE_WORKFLOW)
         logger.info(
             "lead_webhook_received",
             status="received",
@@ -95,6 +108,8 @@ class WorkflowService:
 
         workflow = Workflow(
             workflow_id=uuid4(),
+            tenant_id=principal.tenant_id,
+            created_by=principal.actor_id,
             lead_id=normalized.lead_id,
             correlation_id=correlation_id,
             created_at=datetime.now(UTC),
@@ -105,11 +120,20 @@ class WorkflowService:
             approval=None,
         )
         self._workflows.save(workflow)
+        self._audit.record(
+            event_type=AuditEventType.WORKFLOW_CREATED,
+            outcome=AuditOutcome.SUCCEEDED,
+            principal=principal,
+            workflow_id=workflow.workflow_id,
+            correlation_id=correlation_id,
+        )
         logger.info(
             "workflow_pending_approval",
             status="pending",
             workflow_id=str(workflow.workflow_id),
             lead_id=workflow.lead_id,
+            tenant_id=principal.tenant_id,
+            actor_id=principal.actor_id,
         )
         return workflow
 
@@ -153,47 +177,92 @@ class WorkflowService:
         if not proposal.requires_human_approval:
             raise ProposalValidationError("Proposal must require human approval.")
 
-    def get_workflow(self, workflow_id: UUID) -> Workflow:
-        stored = self._workflows.get(workflow_id)
+    def _get_for_tenant(self, principal: DemoPrincipal, workflow_id: UUID) -> Workflow:
+        """Unknown and cross-tenant workflows are indistinguishable to the caller."""
+        stored = self._workflows.get_for_tenant(principal.tenant_id, workflow_id)
         if stored is None:
             raise WorkflowNotFoundError(f"Workflow {workflow_id} not found.")
         return stored
 
+    def get_workflow(self, principal: DemoPrincipal, workflow_id: UUID) -> Workflow:
+        workflow = self._get_for_tenant(principal, workflow_id)
+        require_capability(principal, Capability.READ_WORKFLOW)
+        return workflow
+
+    def get_audit_trail(self, principal: DemoPrincipal, workflow_id: UUID) -> list[AuditEvent]:
+        self.get_workflow(principal, workflow_id)
+        return self._audit.list_for_workflow(principal.tenant_id, workflow_id)
+
     def decide(
         self,
+        principal: DemoPrincipal,
         workflow_id: UUID,
         request: ApprovalRequest,
+        correlation_id: str,
         logger: SafeLoggerAdapter,
     ) -> Workflow:
-        workflow = self.get_workflow(workflow_id)
-        if not can_transition(workflow.state, request.decision):
-            raise WorkflowAlreadyDecidedError(
-                f"Workflow in state '{workflow.state}' cannot accept "
-                f"decision '{request.decision.value}'."
+        self._get_for_tenant(principal, workflow_id)
+        try:
+            require_capability(principal, Capability.DECIDE_WORKFLOW)
+        except AuthorizationError:
+            self._audit.record(
+                event_type=AuditEventType.WORKFLOW_DECISION_DENIED,
+                outcome=AuditOutcome.DENIED,
+                principal=principal,
+                workflow_id=workflow_id,
+                correlation_id=correlation_id,
             )
+            logger.warning(
+                "workflow_decision_denied",
+                status="denied",
+                workflow_id=str(workflow_id),
+                tenant_id=principal.tenant_id,
+                actor_id=principal.actor_id,
+            )
+            raise
 
-        next_state = next_state_for(request.decision)
-        approval = ApprovalMetadata(
-            decided_at=datetime.now(UTC),
-            decision=request.decision,
-            approved_by=request.approved_by,
-            comment=request.comment,
+        # The lock makes read-check-save atomic so exactly one decision can win.
+        with self._decision_lock:
+            workflow = self._get_for_tenant(principal, workflow_id)
+            if not can_transition(workflow.state, request.decision):
+                raise WorkflowAlreadyDecidedError(
+                    f"Workflow in state '{workflow.state}' cannot accept "
+                    f"decision '{request.decision.value}'."
+                )
+
+            next_state = next_state_for(request.decision)
+            approval = ApprovalMetadata(
+                decided_at=datetime.now(UTC),
+                decision=request.decision,
+                approved_by=principal.actor_id,
+                comment=request.comment,
+            )
+            updated = workflow.model_copy(
+                update={
+                    "state": next_state,
+                    "approval": approval,
+                    "side_effect_executed": False,
+                }
+            )
+            self._workflows.save(updated)
+
+        approved = request.decision is ApprovalDecision.APPROVE
+        self._audit.record(
+            event_type=(
+                AuditEventType.WORKFLOW_APPROVED if approved else AuditEventType.WORKFLOW_REJECTED
+            ),
+            outcome=AuditOutcome.SUCCEEDED,
+            principal=principal,
+            workflow_id=workflow_id,
+            correlation_id=correlation_id,
         )
-        updated = workflow.model_copy(
-            update={
-                "state": next_state,
-                "approval": approval,
-                "side_effect_executed": False,
-            }
-        )
-        self._workflows.save(updated)
-        event = "workflow_approved" if request.decision.value == "approve" else "workflow_rejected"
         logger.info(
-            event,
+            "workflow_approved" if approved else "workflow_rejected",
             status=next_state.value,
             workflow_id=str(workflow_id),
             lead_id=workflow.lead_id,
-            approved_by=request.approved_by,
+            tenant_id=principal.tenant_id,
+            actor_id=principal.actor_id,
         )
         return updated
 
@@ -201,6 +270,8 @@ class WorkflowService:
 def summarize_workflow(workflow: Workflow) -> WorkflowSummary:
     return WorkflowSummary(
         workflow_id=workflow.workflow_id,
+        tenant_id=workflow.tenant_id,
+        created_by=workflow.created_by,
         lead_id=workflow.lead_id,
         correlation_id=workflow.correlation_id,
         state=workflow.state,

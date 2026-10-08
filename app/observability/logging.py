@@ -5,7 +5,7 @@ import logging
 import sys
 from dataclasses import asdict, is_dataclass
 from datetime import UTC, date, datetime
-from typing import Any
+from typing import Any, TextIO
 from uuid import UUID
 
 
@@ -57,11 +57,12 @@ def _json_safe(value: Any) -> Any:
         return repr(type(value).__name__)
 
 
-def configure_logging(level: str = "INFO") -> None:
+def configure_logging(level: str = "INFO", stream: TextIO | None = None) -> None:
+    """Install the JSON handler. ``stream`` defaults to stdout; the MCP server passes stderr."""
     root = logging.getLogger()
     for handler in list(root.handlers):
         root.removeHandler(handler)
-    handler = logging.StreamHandler(sys.stdout)
+    handler = logging.StreamHandler(stream if stream is not None else sys.stdout)
     handler.setFormatter(JsonFormatter())
     root.addHandler(handler)
     root.setLevel(level.upper())

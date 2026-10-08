@@ -1,4 +1,4 @@
-.PHONY: install test lint format run clean
+.PHONY: install test lint format run mcp clean
 
 PYTHON ?= python
 PIP ?= $(PYTHON) -m pip
@@ -22,6 +22,9 @@ format:
 
 run:
 	$(UVICORN) app.main:app --host 127.0.0.1 --port 8000 --reload
+
+mcp:
+	$(PYTHON) -m app.mcp.server
 
 clean:
 	rm -rf __pycache__ build dist *.egg-info .pytest_cache .ruff_cache

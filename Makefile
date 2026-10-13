@@ -1,4 +1,4 @@
-.PHONY: install test lint format run mcp clean
+.PHONY: install test lint format run mcp rag-index rag-eval clean
 
 PYTHON ?= python
 PIP ?= $(PYTHON) -m pip
@@ -25,6 +25,12 @@ run:
 
 mcp:
 	$(PYTHON) -m app.mcp.server
+
+rag-index:
+	$(PYTHON) -m app.rag.index_cli
+
+rag-eval:
+	$(PYTHON) -m app.rag.evaluation --dataset data/evaluation/rag_evaluation.v1.json --reranker lexical
 
 clean:
 	rm -rf __pycache__ build dist *.egg-info .pytest_cache .ruff_cache

@@ -25,6 +25,9 @@ from app.domain.models import (
     ErrorResponse,
     HealthResponse,
     InboundLead,
+    RagIndexStatus,
+    RagQueryRequest,
+    RagQueryResponse,
     ToolExecutionResult,
     ToolExecutionStatus,
     ToolInvocationRequest,
@@ -34,6 +37,7 @@ from app.domain.models import (
     WorkflowAuditTrail,
 )
 from app.observability.logging import SafeLoggerAdapter
+from app.rag.query_service import RagQueryService, RagTopKExceededError
 from app.security.tool_policy import ApprovalRequiredError, AuthorizationError
 from app.services.lead_normalizer import LeadNormalizationError
 from app.services.tool_execution_service import (
@@ -68,6 +72,11 @@ def _get_tool_execution_service(request: Request) -> ToolExecutionService:
     return service
 
 
+def _get_rag_query_service(request: Request) -> RagQueryService:
+    service: RagQueryService = request.app.state.rag_query_service
+    return service
+
+
 def _get_agent_provider(request: Request) -> str:
     provider: str = request.app.state.agent_provider
     return provider
@@ -79,6 +88,7 @@ LoggerDep = Annotated[SafeLoggerAdapter, Depends(build_request_logger)]
 PrincipalDep = Annotated[DemoPrincipal, Depends(demo_principal)]
 WorkflowServiceDep = Annotated[WorkflowService, Depends(_get_workflow_service)]
 ToolServiceDep = Annotated[ToolExecutionService, Depends(_get_tool_execution_service)]
+RagServiceDep = Annotated[RagQueryService, Depends(_get_rag_query_service)]
 IdempotencyKeyHeader = Annotated[
     str,
     Header(
@@ -322,6 +332,63 @@ def execute_tool(
     if result.status is ToolExecutionStatus.REPLAYED:
         response.status_code = status.HTTP_200_OK
     return result
+
+
+@router.post(
+    "/api/v1/rag/query",
+    response_model=RagQueryResponse,
+    responses={
+        401: {"model": ErrorEnvelope},
+        403: {"model": ErrorEnvelope},
+        422: {"model": ErrorEnvelope},
+    },
+    tags=["rag"],
+)
+def rag_query(
+    body: RagQueryRequest,
+    response: Response,
+    principal: PrincipalDep,
+    correlation_id: CorrelationIdDep,
+    logger: LoggerDep,
+    rag_service: RagServiceDep,
+) -> RagQueryResponse:
+    """Read-only, tenant-scoped RAG query. Insufficient evidence is a normal 200 result."""
+    try:
+        outcome = rag_service.query(principal, body, correlation_id, logger)
+    except AuthorizationError as exc:
+        raise _forbidden(correlation_id, exc) from exc
+    except RagTopKExceededError as exc:
+        raise api_error(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            correlation_id,
+            "request_validation_failed",
+            "Request headers or body failed schema validation.",
+            error_category=ErrorCategory.VALIDATION,
+            fields=[ValidationIssue(loc=["body", "top_k"], msg=str(exc), type="less_than_equal")],
+        ) from exc
+    response.headers["X-Correlation-ID"] = correlation_id
+    return outcome.response
+
+
+@router.get(
+    "/api/v1/rag/index/status",
+    response_model=RagIndexStatus,
+    responses={401: {"model": ErrorEnvelope}, 403: {"model": ErrorEnvelope}},
+    tags=["rag"],
+)
+def rag_index_status(
+    response: Response,
+    principal: PrincipalDep,
+    correlation_id: CorrelationIdDep,
+    rag_service: RagServiceDep,
+) -> RagIndexStatus:
+    """Safe index summary for the caller's own tenant only."""
+    try:
+        index_status = rag_service.index_status(principal)
+    except AuthorizationError as exc:
+        raise _forbidden(correlation_id, exc) from exc
+    response.headers["X-Correlation-ID"] = correlation_id
+    return index_status
 
 
 async def _request_validation_handler(

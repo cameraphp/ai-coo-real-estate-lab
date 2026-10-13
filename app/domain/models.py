@@ -12,6 +12,8 @@ from pydantic import (
     EmailStr,
     Field,
     RootModel,
+    field_validator,
+    model_validator,
 )
 
 
@@ -387,6 +389,230 @@ class AuditEvent(BaseModel):
 class WorkflowAuditTrail(BaseModel):
     workflow_id: UUID
     events: list[AuditEvent]
+
+
+# --- Week 3: secure RAG ------------------------------------------------------
+
+RAG_QUESTION_MAX_CHARS = 500
+RAG_TOP_K_LIMIT = 5
+RAG_EXCERPT_MAX_CHARS = 280
+RAG_EMBEDDING_LABEL = "local-deterministic-hashed-lexical"
+
+
+class DocumentType(str, Enum):
+    PROPERTY_BRIEF = "property_brief"
+    TOUR_POLICY = "tour_policy"
+    FOLLOW_UP_PROCEDURE = "follow_up_procedure"
+    ELIGIBILITY_NOTE = "eligibility_note"
+    CONVERSATION_SUMMARY = "conversation_summary"
+    INBOUND_NOTE = "inbound_note"
+
+
+class RerankerKind(str, Enum):
+    """Server-owned reranker choice. Never accepted from a client."""
+
+    NONE = "none"
+    LEXICAL = "lexical"
+
+
+class RagAnswerStatus(str, Enum):
+    GROUNDED = "GROUNDED"
+    INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
+
+
+class InsufficientEvidenceReason(str, Enum):
+    NO_RELEVANT_EVIDENCE = "no_relevant_evidence"
+    CONFLICTING_EVIDENCE = "conflicting_evidence"
+    UNTRUSTED_INSTRUCTION_DETECTED = "untrusted_instruction_detected"
+    QUERY_INJECTION_DETECTED = "query_injection_detected"
+
+
+SourceDocumentId = Annotated[
+    str, Field(min_length=5, max_length=64, pattern=r"^doc-[a-z0-9]+(?:-[a-z0-9]+)*$")
+]
+TenantId = Annotated[str, Field(min_length=8, max_length=32, pattern=r"^tenant-[a-z0-9]+$")]
+CityName = Annotated[str, Field(min_length=1, max_length=64, pattern=r"^[A-Za-z][A-Za-z .'-]*$")]
+SyntheticPropertyId = Annotated[str, Field(pattern=r"^prop-demo-[0-9]{3}$")]
+
+
+class CorpusDocument(BaseModel):
+    """One record of the committed synthetic corpus fixture."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    source_document_id: SourceDocumentId
+    tenant_id: TenantId
+    title: str = Field(min_length=1, max_length=120)
+    document_type: DocumentType
+    city: CityName | None = None
+    property_id: SyntheticPropertyId | None = None
+    content: str = Field(min_length=1, max_length=4000)
+    is_synthetic: Literal[True]
+    # Explicit tags for the controlled contradiction demonstration.
+    fact_key: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{2,63}$")
+    fact_value: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9_]{0,63}$")
+
+    @model_validator(mode="after")
+    def _fact_tags_are_paired(self) -> CorpusDocument:
+        if (self.fact_key is None) != (self.fact_value is None):
+            raise ValueError("fact_key and fact_value must be provided together")
+        return self
+
+
+class SyntheticCorpus(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    corpus_version: str = Field(pattern=r"^v[0-9]+$")
+    description: str = Field(min_length=1, max_length=500)
+    documents: list[CorpusDocument] = Field(min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def _document_ids_are_unique(self) -> SyntheticCorpus:
+        ids = [document.source_document_id for document in self.documents]
+        if len(ids) != len(set(ids)):
+            raise ValueError("source_document_id values must be unique")
+        return self
+
+
+class RagFilters(BaseModel):
+    """The complete, typed filter surface. There is no filter expression language."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    city: CityName | None = None
+    document_type: DocumentType | None = None
+    property_id: SyntheticPropertyId | None = None
+
+    def is_empty(self) -> bool:
+        return self.city is None and self.document_type is None and self.property_id is None
+
+
+class RagQueryRequest(BaseModel):
+    """RAG query body. The tenant comes from the resolved demo principal, never from here."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    question: str = Field(min_length=1, max_length=RAG_QUESTION_MAX_CHARS)
+    top_k: int = Field(default=3, strict=True, ge=1, le=RAG_TOP_K_LIMIT)
+    filters: RagFilters | None = None
+
+    @field_validator("question")
+    @classmethod
+    def _collapse_whitespace(cls, value: str) -> str:
+        return " ".join(value.split())
+
+
+class RagCitation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source_document_id: str
+    chunk_id: str
+    title: str
+    document_type: DocumentType
+    chunk_index: int = Field(ge=0)
+    excerpt: str = Field(min_length=1, max_length=RAG_EXCERPT_MAX_CHARS)
+    retrieval_score: float
+    rerank_score: float | None = None
+
+
+class RagClaim(BaseModel):
+    """One statement of a grounded answer, paired with the chunks that contain it."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    text: str = Field(min_length=1, max_length=RAG_EXCERPT_MAX_CHARS)
+    citation_chunk_ids: list[str] = Field(min_length=1)
+
+
+class RagRetrievalSummary(BaseModel):
+    """Safe observability summary. Counts are tenant-scoped; vectors are never included."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    reranker: RerankerKind
+    embedding: Literal["local-deterministic-hashed-lexical"] = RAG_EMBEDDING_LABEL
+    top_k: int
+    filters_applied: bool
+    filtered_candidate_count: int = Field(ge=0)
+    candidate_pool_count: int = Field(ge=0)
+    excluded_untrusted_count: int = Field(ge=0)
+    returned_citation_count: int = Field(ge=0)
+    latency_ms: float = Field(ge=0)
+
+
+class RagQueryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    query_id: UUID
+    correlation_id: str
+    answer_status: RagAnswerStatus
+    insufficient_evidence_reason: InsufficientEvidenceReason | None = None
+    answer: str
+    claims: list[RagClaim]
+    citations: list[RagCitation]
+    retrieval: RagRetrievalSummary
+    synthetic_data_only: Literal[True] = True
+
+    @model_validator(mode="after")
+    def _answer_is_evidence_bound(self) -> RagQueryResponse:
+        cited = {citation.chunk_id for citation in self.citations}
+        if self.answer_status is RagAnswerStatus.INSUFFICIENT_EVIDENCE:
+            if self.insufficient_evidence_reason is None:
+                raise ValueError("an insufficient-evidence response requires a reason")
+            if self.claims or self.citations:
+                raise ValueError("an insufficient-evidence response carries no evidence")
+            return self
+        if self.insufficient_evidence_reason is not None:
+            raise ValueError("a grounded response has no insufficient-evidence reason")
+        if not self.claims or not self.citations:
+            raise ValueError("a grounded response requires claims and citations")
+        for claim in self.claims:
+            if not set(claim.citation_chunk_ids) <= cited:
+                raise ValueError("every claim must reference returned citations")
+        return self
+
+
+class RagIndexStatus(BaseModel):
+    """Tenant-scoped index summary. It never reports another tenant's counts."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    tenant_id: str
+    corpus_version: str
+    document_count: int = Field(ge=0)
+    chunk_count: int = Field(ge=0)
+    redaction_count: int = Field(ge=0)
+    quarantined_document_count: int = Field(ge=0)
+    embedding: Literal["local-deterministic-hashed-lexical"] = RAG_EMBEDDING_LABEL
+    embedding_dimensions: int
+    chunk_size_tokens: int
+    chunk_overlap_tokens: int
+    reranker: RerankerKind
+    storage: Literal["in_memory"] = "in_memory"
+    synthetic_data_only: Literal[True] = True
+
+
+class RagAuditEventType(str, Enum):
+    QUERY_RECEIVED = "rag_query_received"
+    QUERY_TENANT_SCOPED = "rag_query_tenant_scoped"
+    QUERY_GROUNDED = "rag_query_grounded"
+    QUERY_INSUFFICIENT_EVIDENCE = "rag_query_insufficient_evidence"
+
+
+class RagAuditEvent(BaseModel):
+    """Allowlisted RAG audit fields: identifiers and statuses only, never content."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    event_id: UUID
+    occurred_at: datetime
+    correlation_id: str
+    tenant_id: str
+    actor_id: str
+    query_id: UUID
+    event_type: RagAuditEventType
+    answer_status: RagAnswerStatus | None = None
+    insufficient_evidence_reason: InsufficientEvidenceReason | None = None
 
 
 # --- Error envelope -------------------------------------------------------

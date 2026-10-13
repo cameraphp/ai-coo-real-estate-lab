@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import SettingsConfigDict
 
 from app.adapters.calendar_mock import MockCalendarAdapter
 from app.adapters.crm_mock import MockCrmAdapter
@@ -14,9 +14,12 @@ from app.adapters.tools import ToolAdapters
 from app.api.routes import register_exception_handlers
 from app.api.routes import router as api_router
 from app.observability.logging import configure_logging
+from app.rag.config import RagSettings
+from app.rag.query_service import build_rag_query_service
 from app.repositories.audit import InMemoryAuditRepository
 from app.repositories.idempotency import InMemoryIdempotencyRepository
 from app.repositories.properties import SyntheticJsonPropertyRepository
+from app.repositories.rag_audit import InMemoryRagAuditRepository
 from app.repositories.workflows import InMemoryWorkflowRepository
 from app.services.audit_service import AuditService
 from app.services.property_retrieval import PropertyRetrievalService
@@ -30,7 +33,9 @@ from app.services.tool_executor import (
 from app.services.workflow_service import WorkflowService
 
 
-class AppSettings(BaseSettings):
+class AppSettings(RagSettings):
+    """Application settings. The bounded ``RAG_*`` settings are inherited from RagSettings."""
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -63,11 +68,12 @@ def build_app(
 
     app = FastAPI(
         title="ai-coo-real-estate-lab",
-        version="0.2.0",
+        version="0.3.0",
         description=(
-            "Week 2: Controlled local demo of a real-estate operations assistant with "
+            "Week 3: Controlled local demo of a real-estate operations assistant with "
             "synthetic data, a human approval gate, local mock tools, demo tenant/role "
-            "boundaries, idempotency, and a queryable audit trail. No external side effects."
+            "boundaries, idempotency, a queryable audit trail, and a deterministic "
+            "tenant-scoped RAG lab. No external model, service, or side effect."
         ),
     )
 
@@ -100,8 +106,14 @@ def build_app(
         audit=audit_service,
     )
 
+    # Ingests the committed synthetic corpus now; an invalid fixture fails startup.
+    rag_audit_repository = InMemoryRagAuditRepository()
+    rag_query_service = build_rag_query_service(settings.rag_config(), rag_audit_repository)
+
     app.state.workflow_service = workflow_service
     app.state.tool_execution_service = tool_execution_service
+    app.state.rag_query_service = rag_query_service
+    app.state.rag_audit_repository = rag_audit_repository
     app.state.agent_provider = agent.provider_name
     app.state.settings = settings
 

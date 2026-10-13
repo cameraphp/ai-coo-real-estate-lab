@@ -1,6 +1,8 @@
-# Architecture — ai-coo-real-estate-lab Week 2
+# Architecture — ai-coo-real-estate-lab Week 3
 
-This document explains the components, boundaries, and data flow after Week 2. It is intentionally explicit about what is in scope and what is deferred. Everything described here runs in one local process, against synthetic data and in-memory mock adapters.
+This document explains the components, boundaries, and data flow after Week 3. It is intentionally explicit about what is in scope and what is deferred. Everything described here runs in one local process, against synthetic data and in-memory mock adapters.
+
+Week 3 adds a contained, read-only RAG package (`app/rag/`). The Week 1 and Week 2 components below are intact and unchanged; the RAG design starts at [Week 3: secure RAG](#week-3-secure-rag).
 
 ## Components and layer boundaries
 
@@ -36,6 +38,10 @@ flowchart TB
         McpServer["server.py<br/>one read-only tool"]
         Search["property_search.py"]
     end
+    subgraph Rag["app/rag (Week 3, read-only)"]
+        RagSvc["query_service.py<br/>tenant-aware orchestration"]
+        RagIndex["ingestion.py and vector_store.py<br/>tenant-partitioned index"]
+    end
 
     Routes --> Deps --> Identity
     Routes --> WF
@@ -54,6 +60,8 @@ flowchart TB
     Exec --> Msg
     AuditSvc --> AuditRepo
     McpServer --> Search --> PropRepo
+    Routes --> RagSvc
+    RagSvc --> RagIndex
 ```
 
 The rules are:
@@ -212,8 +220,150 @@ Logs and audit records have separate roles. Logs are operational JSON on stdout 
 4. The service checks that recommended IDs are a subset of the retrieved set and that `requires_human_approval` is true.
 5. The workflow is saved as `PENDING_APPROVAL` with `side_effect_executed: false`. Exactly one approve or reject decision is allowed, and a second one returns `409`.
 
-## Scope deferred to Weeks 3 and 4
+## Week 3: secure RAG
 
-- **Week 3:** RAG ingestion, embeddings, retrieval evaluation, citations, and an opt-in real LLM adapter (disabled by default and never used in tests).
+A read-only question-answering path over a small synthetic corpus. It uses no model, no external service, and no network. The RAG service never calls a tool, never reads or writes a workflow, and is not exposed through the MCP server.
+
+### Modules
+
+| Module | Responsibility |
+| --- | --- |
+| `app/rag/config.py` | `RagSettings` (bounded env settings) and the validated `RagConfig`. `AppSettings` inherits `RagSettings`. |
+| `app/rag/text.py` | Whitespace normalization, tokenizer, stopword list. Shared by embedding, reranking, and grounding. |
+| `app/rag/corpus.py` | Loads and strictly validates the fixture. Errors name fields, never content. |
+| `app/rag/redaction.py` | Email and telephone redaction. |
+| `app/rag/chunking.py` | Token windows, stable chunk IDs, content hashes. |
+| `app/rag/embeddings.py` | `DeterministicHashEmbeddingProvider` and cosine similarity. |
+| `app/rag/vector_store.py` | In-memory index partitioned by tenant. |
+| `app/rag/retrieval.py` | Embeds the question and returns a bounded pool. |
+| `app/rag/reranking.py` | `none` and `lexical` rerankers. |
+| `app/rag/injection.py` | Injection-like phrase detector. |
+| `app/rag/grounding.py` | Evidence gate, trust and conflict checks, extractive composer. |
+| `app/rag/ingestion.py` | The startup pipeline that builds the index. |
+| `app/rag/query_service.py` | Orchestration, safe logging, RAG audit events. |
+| `app/rag/evaluation.py`, `app/rag/index_cli.py` | Local CLIs. |
+| `app/security/rag_policy.py` | Role allowlist for the RAG endpoints. |
+| `app/repositories/rag_audit.py` | Append-only RAG audit store. |
+
+`app/main.py` builds the RAG service explicitly (`build_rag_query_service`) and stores it on `app.state`; the two routes in `app/api/routes.py` each make one service call.
+
+### Ingestion pipeline
+
+```mermaid
+flowchart LR
+    Fixture["data/rag/synthetic_documents.v1.json"] --> Validate["Strict validation<br/>is_synthetic must be true"]
+    Validate --> Redact["Redact title and content<br/>email and phone markers"]
+    Redact --> Normalize["Normalize whitespace"]
+    Normalize --> Quarantine["Injection screen<br/>flag the whole document"]
+    Quarantine --> Chunk["Token windows<br/>80 tokens, 20 overlap"]
+    Chunk --> Embed["Hashed lexical embedding<br/>128 signed buckets"]
+    Embed --> Index["In-memory index<br/>one partition per tenant"]
+```
+
+1. **Validate.** `SyntheticCorpus` and `CorpusDocument` use `extra="forbid"`. `is_synthetic` is `Literal[True]`. Document IDs must be unique, and `fact_key` / `fact_value` must come as a pair. Any failure raises `CorpusValidationError` and the app does not start. The message lists field locations and error types only.
+2. **Redact.** Before anything else touches the text. Email addresses become `[REDACTED_EMAIL]`; North American-style telephone numbers, which covers the fixture's fictional `555` value, become `[REDACTED_PHONE]`. Titles are redacted too, because they are returned in citations.
+3. **Normalize.** Whitespace runs collapse to single spaces.
+4. **Screen.** If the redacted document matches the injection detector, every chunk of it is flagged `untrusted_instruction`.
+5. **Chunk.** Windows of `RAG_CHUNK_SIZE_TOKENS` whitespace tokens with `RAG_CHUNK_OVERLAP_TOKENS` overlap. Chunk ID is `<source_document_id>#chunk-<NNN>`. Each chunk keeps tenant, title, document type, city, property ID, chunk index, a `sha256:` content hash, the number of redaction markers it contains, the document's redaction count, the fact tags, and the untrusted flag. An empty window is never produced.
+6. **Embed and index.** Content tokens are embedded and the entry is added to its tenant's partition. Duplicate chunk IDs and vectors of the wrong size are rejected.
+
+There is no HTTP ingestion path. `python -m app.rag.index_cli` runs the same pipeline and prints counts plus an `index_fingerprint`, a digest of every chunk ID and content hash that is identical on every run.
+
+### Local hashed lexical embedding: what it is and is not
+
+`DeterministicHashEmbeddingProvider` lowercases the text, keeps alphanumeric tokens, drops a short stopword list, folds simple plurals, and adds each token's count to one of `RAG_EMBEDDING_DIMENSIONS` buckets chosen by `hashlib.sha256`, with a hash-derived sign. The vector is L2-normalized, so cosine similarity is a dot product.
+
+- It uses `hashlib`, never Python's `hash()`, which is randomized per process. A test builds the index in two subprocesses with different `PYTHONHASHSEED` values and compares the results.
+- It is **lexical**. Two texts are similar only when they share tokens. It has no knowledge of synonyms or meaning and is not a pretrained semantic model.
+- It **collides**. With 128 buckets and roughly 50 content tokens per chunk, unrelated tokens often share a bucket. A chunk can score above the vector threshold while sharing no term with the question; the evaluation's no-evidence case contains one. This is the reason for the second evidence check described below.
+
+### Tenant-before-ranking and filter-before-ranking
+
+`InMemoryVectorStore.search(tenant_id, query_vector, filters, limit)` does three things in a fixed order:
+
+1. select the tenant's partition (a dictionary lookup, so other tenants' entries are not iterated);
+2. keep entries that match the typed filter (`city` case-insensitive, `document_type`, `property_id`);
+3. compute similarity for the survivors, sort by score descending then `chunk_id`, and keep the first 20.
+
+Steps 1 and 2 happen before any score exists. Tests inject a recording similarity function and assert that the set of scored chunks equals the tenant- and filter-constrained set.
+
+The store's public surface is `add`, `search`, `get`, `stats`, and `contested_fact_keys`. Every read takes a `tenant_id`. There is no method that lists or searches across tenants, so a caller cannot forget the tenant filter.
+
+### Reranking
+
+`RAG_RERANKER` selects the reranker at startup. A request cannot choose it.
+
+- **`none`** keeps the vector order and attaches no rerank score.
+- **`lexical`** scores each candidate as *term coverage* (the fraction of the question's distinct content terms present in the chunk) plus 0.1 for each adjacent pair of question terms that is also adjacent in the chunk, capped at 0.3.
+
+Both order by score descending, then `chunk_id` ascending, so ties are stable. A reranker receives the bounded pool and returns a permutation of it; it has no access to the store and cannot add a chunk.
+
+### Grounding and citation policy
+
+The composer in `app/rag/grounding.py` is deterministic and extractive. It is not an LLM.
+
+- **Evidence gate.** A chunk is evidence only if `retrieval_score >= RAG_MIN_EVIDENCE_SCORE` (default 0.15) **and** term coverage `>= RAG_MIN_QUERY_TERM_COVERAGE` (default 0.7). The gate does not depend on the reranker setting.
+- **Selection.** Evidence is the first `top_k` trusted chunks that pass the gate, in reranked order.
+- **Claims.** For each evidence chunk, the sentence that shares the most question terms is copied verbatim (at most 240 characters). Identical sentences from overlapping chunks merge into one claim that cites both chunks.
+- **Citations.** One per evidence chunk: `source_document_id`, `chunk_id`, `title`, `document_type`, `chunk_index`, `excerpt`, `retrieval_score`, `rerank_score`. The excerpt starts at the claim sentence and is cut at a word boundary within 280 characters.
+- **Answer.** A fixed prefix followed by each claim in quotes with `[n]` markers that index the citation list.
+- **Model-level invariant.** `RagQueryResponse` rejects a grounded response without claims or citations, a claim that references a chunk not in the citations, and an insufficient-evidence response that carries any evidence or lacks a reason.
+
+The composer does not infer, merge, summarize, or recommend. It may quote a sentence that is related to the question without being the best answer; that is a documented limit of lexical matching, not a fabricated claim.
+
+### Decision flow
+
+```mermaid
+flowchart TD
+    Start["Valid principal and request"] --> Role["Role on the RAG allowlist?"]
+    Role -->|"no"| Forbidden["403 forbidden"]
+    Role -->|"yes"| TopK["top_k within RAG_MAX_TOP_K?"]
+    TopK -->|"no"| Invalid["422 request_validation_failed"]
+    TopK -->|"yes"| Inject["Question matches the injection detector?"]
+    Inject -->|"yes"| QI["INSUFFICIENT_EVIDENCE<br/>query_injection_detected<br/>retrieval does not run"]
+    Inject -->|"no"| Retrieve["Tenant partition, typed filter,<br/>vector ranking, rerank"]
+    Retrieve --> Gate["Any chunk passes the evidence gate?"]
+    Gate -->|"no"| NoEvidence["INSUFFICIENT_EVIDENCE<br/>no_relevant_evidence"]
+    Gate -->|"yes"| Trust["Any passing chunk from a trusted document?"]
+    Trust -->|"no"| Untrusted["INSUFFICIENT_EVIDENCE<br/>untrusted_instruction_detected"]
+    Trust -->|"yes"| Conflict["Trusted evidence carries a contested fact_key?"]
+    Conflict -->|"yes"| Conflicting["INSUFFICIENT_EVIDENCE<br/>conflicting_evidence"]
+    Conflict -->|"no"| Grounded["GROUNDED<br/>claims and citations"]
+```
+
+- **Trust and conflict checks look at the whole pool**, not only the first `top_k`. An untrusted chunk that ranks first is skipped rather than displacing trusted evidence, and a small `top_k` cannot hide a contradiction.
+- **Contested fact keys are computed per tenant, over the whole partition.** A `fact_key` with more than one `fact_value` among the tenant's trusted documents is contested. Because this ignores the request's filter, filtering to one side of a contradiction still returns `conflicting_evidence`. Untrusted documents are excluded from the computation, so an injected note cannot create a conflict to suppress an answer.
+- **Contradiction handling is a controlled demonstration.** It depends on explicit fixture tags and is tenant-scoped: tenant B, which has a single value for the same key, is answered. It is not a general natural-language contradiction engine.
+- **Incomplete evidence** has no separate reason. A document that mentions the subject but not the requested facts fails the coverage check and yields `no_relevant_evidence`.
+- **The injection detector is a short phrase list** (`app/rag/injection.py`) applied to the question and, at ingestion, to documents. It is easy to evade and is not a prompt-injection defense. What it demonstrates is where the control sits: untrusted text is screened before it can influence retrieval or reach an answer, and it is never echoed.
+- Every insufficient-evidence result is a `200` with the same fixed message, zero claims, and zero citations.
+
+### RAG log and audit allowlists
+
+One log line per query, event `rag_query_completed`, with exactly these fields besides the formatter's standard ones: `correlation_id`, `tenant_id`, `actor_id`, `query_id`, `answer_status`, `insufficient_evidence_reason`, `filtered_candidate_count`, `returned_citation_count`, `reranker`, `latency_ms`.
+
+`RagAuditEvent` is a frozen, `extra="forbid"` model whose fields are the allowlist: `event_id`, `occurred_at` (UTC), `correlation_id`, `tenant_id`, `actor_id`, `query_id`, `event_type`, `answer_status?`, `insufficient_evidence_reason?`.
+
+| Event | Recorded when |
+| --- | --- |
+| `rag_query_received` | The request passed the role and `top_k` checks. |
+| `rag_query_tenant_scoped` | Tenant-bound retrieval is about to run. Absent for an injection-like question. |
+| `rag_query_grounded` | A grounded answer was produced. |
+| `rag_query_insufficient_evidence` | Any of the four insufficient-evidence reasons. |
+
+Neither destination ever holds question text, document content, excerpts, answer text, filter values, vectors, redacted values, the injection phrase, or a traceback. Tests assert this against captured log lines and the stored events.
+
+Why a second audit model: the Week 2 `AuditEvent` requires a `workflow_id`, and a test pins its field set as a closed allowlist. A RAG query has no workflow. Making `workflow_id` optional would loosen the Week 2 schema, so Week 3 adds `RagAuditEvent` and `InMemoryRagAuditRepository` (`append`, `list_for_tenant`) and leaves the Week 2 model untouched. RAG audit events are held in memory and are not exposed over HTTP in this milestone.
+
+### Index lifecycle and limits
+
+- The index is built once, in `build_app`, from the committed fixture. It is immutable afterwards: no endpoint adds, updates, or deletes a document.
+- Everything is in process memory. A restart rebuilds the same index from the fixture and discards RAG audit events.
+- One process only. There is no persistence, replication, or cross-process coordination.
+- Search is a linear scan of the tenant partition with pure-Python arithmetic. That is adequate for 15 chunks and is not a design for scale.
+- `RAG_CORPUS_PATH` exists for tests and for the committed fixture. Do not point it at real documents.
+
+## Scope deferred to Week 4 and later
+
 - **Week 4:** Docker packaging, CI, broader packaging and portfolio polish, and the recorded demo video.
-- **Later:** PostgreSQL-backed workflows, idempotency, and audit with optimistic locking; real authentication and an identity provider; backoff, DLQ, and circuit breakers; OpenTelemetry; rate limiting.
+- **Later:** PostgreSQL-backed workflows, idempotency, and audit with optimistic locking; a durable vector index; real authentication and an identity provider; an opt-in real embedding model and LLM adapter (disabled by default, never used in tests) measured on the same versioned evaluation dataset; a queryable RAG audit endpoint; backoff, DLQ, and circuit breakers; OpenTelemetry; rate limiting.

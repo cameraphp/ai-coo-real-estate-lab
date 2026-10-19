@@ -1,0 +1,20 @@
+# Local demonstration only. Binds to 127.0.0.1; do not expose this service publicly.
+# All state is in memory and resets when the container restarts. See docs/container.md.
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ai-coo-real-estate-lab:local
+    ports:
+      - "127.0.0.1:8000:8000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
+    # Forwards stop signals to Uvicorn and reaps child processes. Signal hygiene only.
+    init: true

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-coo-real-estate-lab"
-version = "0.3.0"
-description = "Week 3: Controlled engineering demonstration of a real-estate operations assistant workflow with local mock tools and a deterministic, tenant-scoped RAG evaluation lab."
+version = "0.4.0"
+description = "Week 4: Controlled engineering demonstration of a real-estate operations assistant workflow with local mock tools, a deterministic tenant-scoped RAG evaluation lab, and local container and CI verification."
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
@@ -13,7 +13,8 @@ authors = [{name = "Portfolio Demo"}]
 dependencies = [
     "email-validator>=2.1,<3",
     "fastapi>=0.110,<0.116",
-    "pydantic>=2.6,<3",
+    # mcp 1.12.x imports a pydantic internal (eval_type_backport) that pydantic 2.14 removed.
+    "pydantic>=2.6,<2.14",
     "pydantic-settings>=2.2,<3",
     "uvicorn[standard]>=0.27,<0.31",
     "httpx>=0.27,<0.28",

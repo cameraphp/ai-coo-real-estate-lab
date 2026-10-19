@@ -1,0 +1,40 @@
+# The Dockerfile copies named paths only (pyproject.toml, README.md, app/, data/).
+# This file additionally keeps secrets, local environments, and caches out of the build context.
+
+# Version control and CI
+.git
+.github
+
+# Local environments and secrets
+.venv
+venv
+.env
+.env.*
+
+# Caches and generated files, at any depth
+__pycache__
+**/__pycache__
+.pytest_cache
+.ruff_cache
+.mypy_cache
+*.log
+**/*.log
+*.pyc
+*.pyo
+*.pyd
+**/*.py[cod]
+build
+dist
+*.egg-info
+**/*.egg-info
+
+# Not needed at runtime
+tests
+docs
+specs
+scripts
+prompts
+Dockerfile*
+compose*.yaml
+CHANGELOG.md
+Makefile

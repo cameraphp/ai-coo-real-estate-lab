@@ -1,16 +1,37 @@
-# ai-coo-real-estate-lab — Week 3
+# ai-coo-real-estate-lab — Week 4
 
-> This repository is a **controlled engineering demonstration** of a real-estate operations workflow. All leads, properties, and documents are synthetic. **No external system is ever called**: CRM, calendar, and messaging are represented by local, deterministic, in-memory mock adapters. Nothing is sent, booked, or written to any real system, and no real side effect is executed.
+[![CI](https://github.com/cameraphp/ai-coo-real-estate-lab/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/cameraphp/ai-coo-real-estate-lab/actions/workflows/ci.yml)
 
-> Week 3 adds a local deterministic secure RAG demonstration: synthetic document ingestion, redaction before indexing, tenant-scoped retrieval, typed metadata filters, local hashed lexical embeddings, configurable lexical reranking, evidence citations, insufficient-evidence behavior, and a versioned evaluation dataset. No external model, document store, API key, customer data, or network call is used.
+> This repository is a **controlled engineering demonstration** of a real-estate operations workflow. All leads, properties, documents, and the evidence cited from them are synthetic. **No external system is ever called**: CRM, calendar, and messaging are represented by local, deterministic, in-memory mock adapters. Nothing is sent, booked, or written to any real system, and no real side effect is executed. **Run it on your own machine only; it must not be exposed as a public service.**
+
+> Week 4 packages the demo for local delivery: a multi-stage Docker image that runs as a non-root user, a Compose file bound to `127.0.0.1`, a standard-library container smoke client, and a GitHub Actions workflow that runs lint, tests, both RAG evaluation modes, and a container smoke test. Packaging is not deployment: no image is published, nothing is deployed, and the application's runtime behavior is unchanged.
+
+> Week 3 added a local deterministic secure RAG demonstration: synthetic document ingestion, redaction before indexing, tenant-scoped retrieval, typed metadata filters, local hashed lexical embeddings, configurable lexical reranking, evidence citations, insufficient-evidence behavior, and a versioned evaluation dataset. No external model, document store, API key, customer data, or network call is used.
 
 > Week 2 added local mock CRM, calendar, and messaging tools, deterministic policy enforcement, demo tenant/role boundaries, idempotency, bounded mock-failure behavior, and a queryable audit trail. These are controlled adapters and local policy demonstrations; no external system, customer data, or real side effect is involved.
 
-Week 1 built the core flow: a synthetic lead arrives over HTTP, is validated and normalized, matched against a synthetic property catalog, passed through a **mock** LLM-adapter boundary, and the resulting proposal waits behind a **human approval gate**. Week 2 put explicit tool boundaries around that workflow: who may act, on which tenant's data, with which tool, how often, after which approval, and with what evidence. Week 3 adds a read-only question-answering path over a small synthetic corpus, built so that it can be reasoned about line by line.
+Week 1 built the core flow: a synthetic lead arrives over HTTP, is validated and normalized, matched against a synthetic property catalog, passed through a **mock** LLM-adapter boundary, and the resulting proposal waits behind a **human approval gate**. Week 2 put explicit tool boundaries around that workflow: who may act, on which tenant's data, with which tool, how often, after which approval, and with what evidence. Week 3 added a read-only question-answering path over a small synthetic corpus, built so that it can be reasoned about line by line. Week 4 makes all of it straightforward to clone, build, run, and verify in a container.
 
 > **Engineering principle:** retrieval is not enough. Documents are scoped by tenant, transformed predictably, retrieved with explicit controls, reranked transparently, cited as evidence, evaluated on a versioned dataset, and allowed to say "insufficient evidence" rather than inventing an answer.
 
-The accurate description of Week 3 is: a controlled engineering demonstration with a synthetic corpus, deterministic local hashed lexical embeddings, in-memory tenant-scoped retrieval, and evidence-grounded response templates. It is not a production RAG system and makes no model-quality claim.
+The accurate description of Week 3 is: a controlled engineering demonstration with a synthetic corpus, deterministic local hashed lexical embeddings, in-memory tenant-scoped retrieval, and evidence-grounded response templates. It is not a production RAG system and makes no model-quality claim. The accurate description of the Week 4 result is: a containerized, locally runnable controlled engineering demonstration with CI verification configuration. It is not a deployed service or a production container.
+
+## Week 4 package
+
+| Artifact | Purpose |
+| --- | --- |
+| [`Dockerfile`](Dockerfile) | Multi-stage build on `python:3.11-slim-bookworm`: runtime dependencies only, the `app/` package and synthetic `data/` fixtures, one Uvicorn process as UID/GID `10001`, and a standard-library health check. |
+| [`.dockerignore`](.dockerignore) | Keeps Git metadata, virtual environments, `.env` files, caches, tests, docs, and specs out of the build context. |
+| [`compose.yaml`](compose.yaml) | One local service on `127.0.0.1:8000` with a read-only root filesystem, a `/tmp` tmpfs, no Linux capabilities, `no-new-privileges`, and no volumes. |
+| [`scripts/container_smoke.py`](scripts/container_smoke.py) | Standard-library smoke client: waits for `/health`, sends one read-only tenant A RAG query, and checks grounding, tenant A citations, and redaction. |
+| [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | Verification-only CI: `quality`, `rag-evaluation`, and `container-smoke`. |
+| `make docker-build`, `docker-up`, `docker-down`, `docker-smoke` | Local container shortcuts. |
+| [`CHANGELOG.md`](CHANGELOG.md) | Milestones `0.1.0` to `0.4.0`, derived from the commit history. |
+| [`docs/container.md`](docs/container.md) | Image layout, Compose controls, Windows commands, limits, troubleshooting. |
+| [`docs/release-checklist.md`](docs/release-checklist.md) | Before-commit, after-push, and before-recording checks. |
+| [`docs/recording-guide.md`](docs/recording-guide.md) | A human-run 3–5 minute recording plan. |
+
+The Week 1–3 application code, API contracts, corpus, evaluation dataset, and tests are unchanged; the version is now `0.4.0`. One dependency bound was narrowed to `pydantic<2.14`: a fresh install otherwise resolves a pydantic release whose internals the pinned MCP SDK (1.12.x) can no longer import. The suite has 405 tests: the 376 from Weeks 1–3 plus 29 contract tests for the smoke client.
 
 ## What Week 3 demonstrates
 
@@ -55,7 +76,7 @@ Week 1 and Week 2 behavior is preserved. Week 3 adds endpoints and settings and 
 - Production security or performance. There are no benchmark claims, and the reported latency is an unloaded in-process observation.
 - Real authentication (OAuth, JWT, API keys, passwords), a production identity provider, or production authorization.
 - Queues, workers, durable sessions, checkpoints, DLQs, or crash recovery.
-- Docker, CI/CD, cloud deployment, OpenTelemetry, dashboards, rate limiting, or circuit breakers (Week 4 covers packaging and CI).
+- Cloud deployment, continuous delivery, image publishing to any registry, OpenTelemetry, dashboards, rate limiting, or circuit breakers. Week 4 adds local Docker packaging and CI verification only.
 - A network-exposed MCP endpoint, write-capable MCP tools, filesystem or shell tools. RAG is not exposed through MCP and never executes a tool.
 - Any UI.
 
@@ -108,7 +129,7 @@ flowchart LR
     Eval --> Screen
 ```
 
-All stores are in process memory and are wiped on restart. That is deliberate for this milestone; durable storage is future work. See [`docs/architecture.md`](docs/architecture.md) for the full design.
+All stores are in process memory and are wiped on restart, including inside a container. That is deliberate for this demonstration; durable storage would be a separate decision. Week 4 adds no runtime component. See [`docs/architecture.md`](docs/architecture.md) for the full design and the delivery and verification boundary.
 
 ## Demo identities and limitations
 
@@ -411,10 +432,11 @@ See [`docs/mcp.md`](docs/mcp.md) for the schema and client configuration. Week 3
 ## Prerequisites
 
 - Python 3.11 or newer.
+- For the container path: Docker Desktop (Windows/macOS) or Docker Engine (Linux), running, with the Docker Compose v2 plugin. No registry account is needed.
 - No API key is needed; everything runs locally with mocks.
 - The `curl` walkthrough uses a POSIX shell (macOS/Linux, Git Bash, or WSL on Windows).
 
-## Quick start (clean clone)
+## Fast local start
 
 ```bash
 git clone <your-fork-url>
@@ -429,6 +451,77 @@ make rag-index
 make rag-eval
 make run
 ```
+
+On Windows without GNU Make, use the commands under [Testing and linting](#testing-and-linting) and run the server with `python -m uvicorn app.main:app --host 127.0.0.1 --port 8000`.
+
+## Docker quick start
+
+The image and Compose service run the same application with the same synthetic fixtures. Commands work in Bash and PowerShell as written; [`docs/container.md`](docs/container.md) has multi-line PowerShell forms and troubleshooting.
+
+**Direct image:**
+
+```bash
+docker build --tag ai-coo-real-estate-lab:local .
+docker image inspect ai-coo-real-estate-lab:local --format '{{.Config.User}}'
+docker run --detach --rm --name ai-coo-real-estate-lab-local --publish 127.0.0.1:8000:8000 --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true ai-coo-real-estate-lab:local
+python scripts/container_smoke.py --base-url http://127.0.0.1:8000
+docker stop ai-coo-real-estate-lab-local
+```
+
+**Compose:**
+
+```bash
+docker compose up --build            # or: make docker-up
+# in a second terminal:
+python scripts/container_smoke.py --base-url http://127.0.0.1:8000   # or: make docker-smoke
+# after inspection:
+docker compose down --remove-orphans # or: make docker-down
+```
+
+`docker compose up --build` is a **local demonstration command**. It binds only to `127.0.0.1:8000` by design, so the service is reachable from this machine only. While it runs, the API is at `http://127.0.0.1:8000` and the [`curl` walkthrough](#curl-walkthrough) works unchanged.
+
+A passing smoke run prints a summary like this, and never the question, response body, or excerpts:
+
+```json
+{
+  "container_smoke": "passed",
+  "health": "ok",
+  "service": "ai-coo-real-estate-lab",
+  "rag_answer_status": "GROUNDED",
+  "citation_count": 2,
+  "cited_source_document_ids": ["doc-a-brief-prop-001", "doc-a-brief-prop-002"],
+  "raw_pii_fragments_found": 0,
+  "synthetic_data_only": true
+}
+```
+
+## Container behavior and limits
+
+- **Non-root.** The image runs as UID/GID `10001`; the code and fixtures are root-owned and read-only to that user.
+- **Read-only.** Compose and the documented `docker run` use a read-only root filesystem, a `/tmp` tmpfs, no Linux capabilities, and `no-new-privileges`.
+- **Synthetic fixtures copied into the image.** `data/` is baked in at build time. Nothing is mounted from the host and nothing is downloaded at runtime.
+- **In-memory state resets on restart.** Workflows, approvals, audit events, idempotency records, mock records, and the RAG index are rebuilt from scratch whenever the container starts. There are no volumes.
+- **Single process.** One Uvicorn process, no workers, because the locks and stores are per process.
+- **Static demo identity.** `X-Demo-Actor-ID` is still a client-asserted label, not authentication.
+- **No external calls.** No model, API key, external service, or outbound request at startup or at request time.
+- **Not deployed or published.** There is no public deployment, and no image is pushed to Docker Hub, GHCR, or any registry.
+- **Health means liveness only.** `healthy` means the local process answered `/health`; it is not an availability claim.
+
+## CI verification
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on pushes to `main`, on pull requests, and on manual dispatch. The token is read-only (`contents: read`), no secret is used, only `actions/checkout` and `actions/setup-python` are referenced, and no job publishes or deploys anything.
+
+| Job | Runs on | Verifies |
+| --- | --- | --- |
+| `quality` | Ubuntu, Python 3.11 and 3.13 | `pip install -e ".[dev]"`, `ruff check`, `ruff format --check`, `pytest -q`. |
+| `rag-evaluation` | Ubuntu, Python 3.11, after `quality` | The index command and the evaluation with `--reranker lexical` and `--reranker none`, with no generated files left behind. |
+| `container-smoke` | Ubuntu, after `quality` | `docker build`, a non-root configured user, a hardened `docker run` on `127.0.0.1:8000`, the smoke client, a non-root live process, and bounded logs plus cleanup on success or failure. |
+
+CI results must be observed on GitHub after a push: a green result exists only once GitHub has run the workflow for that commit. Check the badge at the top of this README or the [Actions page](https://github.com/cameraphp/ai-coo-real-estate-lab/actions/workflows/ci.yml).
+
+## Recording readiness
+
+[`docs/recording-guide.md`](docs/recording-guide.md) is a prepared plan for a 3–5 minute walkthrough: what to show, what to say, and what never to capture. No video asset is included in the repository yet. Use [`docs/release-checklist.md`](docs/release-checklist.md) before recording.
 
 ## Environment variables
 
@@ -673,6 +766,42 @@ python -m app.rag.index_cli
 python -m app.rag.evaluation --dataset data/evaluation/rag_evaluation.v1.json --reranker lexical
 ```
 
+## Release and review commands
+
+Run these from a clean checkout before committing; [`docs/release-checklist.md`](docs/release-checklist.md) lists the expected evidence.
+
+```bash
+# Python quality and evaluation
+python -m pip install -e ".[dev]"
+python -m ruff check .
+python -m ruff format --check .
+python -m pytest -q
+python -m app.rag.index_cli
+python -m app.rag.evaluation --dataset data/evaluation/rag_evaluation.v1.json --reranker lexical
+python -m app.rag.evaluation --dataset data/evaluation/rag_evaluation.v1.json --reranker none
+
+# Direct image
+docker build --tag ai-coo-real-estate-lab:local .
+docker image inspect ai-coo-real-estate-lab:local --format '{{.Config.User}}'
+docker run --detach --rm --name ai-coo-real-estate-lab-local --publish 127.0.0.1:8000:8000 --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true ai-coo-real-estate-lab:local
+python scripts/container_smoke.py --base-url http://127.0.0.1:8000
+docker logs --tail 100 ai-coo-real-estate-lab-local
+docker stop ai-coo-real-estate-lab-local
+
+# Compose
+docker compose config --quiet
+docker compose up --build -d
+python scripts/container_smoke.py --base-url http://127.0.0.1:8000
+docker compose ps
+docker compose down --remove-orphans
+
+# Git
+git diff --check
+git status --short
+git diff --stat
+git log --oneline -4
+```
+
 ## Technical decisions, trade-offs, and known limits
 
 - **FastAPI + Pydantic v2** at every boundary. The tool request is a discriminated union, so an unknown tool cannot reach a code path.
@@ -695,11 +824,13 @@ python -m app.rag.evaluation --dataset data/evaluation/rag_evaluation.v1.json --
 - **No external integration or real side effect exists.** Mock drafts are never sent, mock availability never books, and mock tasks exist only in process memory. RAG is read-only.
 - **Not production security.** The tenant/role checks, allowlist, audit trail, redaction, injection detector, and contradiction handling are controlled demonstrations of the boundaries, not a certified or hardened implementation.
 - **Do not use with customer data.** Do not point `RAG_CORPUS_PATH` at real documents.
+- **Containers do not change any of this.** The image is for local runs. Keep the `127.0.0.1` binding, and do not publish the image or deploy it as a service.
 
-## Roadmap — future work only
+## Roadmap
 
-- **Week 4:** Docker packaging, CI, broader portfolio polish, and the 3–5 minute demo video following [`docs/demo-plan.md`](docs/demo-plan.md).
-- **Later:** durable PostgreSQL storage for workflows, idempotency, audit, and a persistent vector index; real authentication and an identity provider; an opt-in real embedding model and LLM adapter, disabled by default and never required by tests, evaluated on the same versioned dataset; a queryable RAG audit endpoint; retry backoff; a DLQ; OpenTelemetry; rate limiting.
+Week 4 completes the planned local portfolio packaging. The demo recording itself is a human step that follows [`docs/recording-guide.md`](docs/recording-guide.md) once CI has been observed green on GitHub.
+
+Anything beyond this is a separate decision, not a commitment: durable storage, real authentication, real integrations, opt-in model adapters evaluated on the same versioned dataset, deployment, and production hardening.
 
 ## License
 

@@ -1,8 +1,8 @@
-# Architecture — ai-coo-real-estate-lab Week 3
+# Architecture — ai-coo-real-estate-lab Week 4
 
-This document explains the components, boundaries, and data flow after Week 3. It is intentionally explicit about what is in scope and what is deferred. Everything described here runs in one local process, against synthetic data and in-memory mock adapters.
+This document explains the components, boundaries, and data flow after Week 4. It is intentionally explicit about what is in scope and what is deferred. Everything described here runs in one local process, against synthetic data and in-memory mock adapters, whether it is started with `make run` or in the local container.
 
-Week 3 adds a contained, read-only RAG package (`app/rag/`). The Week 1 and Week 2 components below are intact and unchanged; the RAG design starts at [Week 3: secure RAG](#week-3-secure-rag).
+Week 3 adds a contained, read-only RAG package (`app/rag/`). The Week 1 and Week 2 components below are intact and unchanged; the RAG design starts at [Week 3: secure RAG](#week-3-secure-rag). Week 4 (version `0.4.0`) adds no runtime component; it packages and verifies the same application, as described in [Delivery and verification boundary](#delivery-and-verification-boundary).
 
 ## Components and layer boundaries
 
@@ -209,7 +209,7 @@ Logs and audit records have separate roles. Logs are operational JSON on stdout 
 ## Why everything is in memory and local
 
 - **Hermetic and reproducible.** `pytest` and the curl walkthrough need no services, network, or secrets.
-- **Honest scope.** This milestone demonstrates *boundaries*. Durability, cross-process locking, and multi-worker deployment are separate problems, and they are listed as future work.
+- **Honest scope.** This milestone demonstrates *boundaries*. Durability, cross-process locking, and multi-worker deployment are separate problems, and they are listed under [Scope beyond Week 4](#scope-beyond-week-4).
 - **Consequences.** A restart wipes workflows, idempotency records, audit events, and mock records. The idempotency and decision locks are per-process only, so this service is unsuitable for more than one worker.
 
 ## Week 1 pipeline (unchanged)
@@ -363,7 +363,30 @@ Why a second audit model: the Week 2 `AuditEvent` requires a `workflow_id`, and 
 - Search is a linear scan of the tenant partition with pure-Python arithmetic. That is adequate for 15 chunks and is not a design for scale.
 - `RAG_CORPUS_PATH` exists for tests and for the committed fixture. Do not point it at real documents.
 
-## Scope deferred to Week 4 and later
+## Delivery and verification boundary
 
-- **Week 4:** Docker packaging, CI, broader packaging and portfolio polish, and the recorded demo video.
-- **Later:** PostgreSQL-backed workflows, idempotency, and audit with optimistic locking; a durable vector index; real authentication and an identity provider; an opt-in real embedding model and LLM adapter (disabled by default, never used in tests) measured on the same versioned evaluation dataset; a queryable RAG audit endpoint; backoff, DLQ, and circuit breakers; OpenTelemetry; rate limiting.
+Week 4 adds delivery artifacts at the repository root (`Dockerfile`, `.dockerignore`, `compose.yaml`, `scripts/container_smoke.py`, `.github/workflows/ci.yml`). None of them live in, or change, the domain, RAG, tool, or policy code.
+
+```mermaid
+flowchart LR
+    Source["Repository source<br/>app, data, tests"] --> Quality["CI quality<br/>Ruff and pytest on 3.11 and 3.13"]
+    Quality --> RagEval["CI rag-evaluation<br/>lexical and none rerankers"]
+    Quality --> Build["Local docker build<br/>multi-stage, runtime deps only"]
+    Build --> Image["Local image<br/>UID 10001, app and data only"]
+    Image --> Run["Hardened local run<br/>127.0.0.1, read-only, no capabilities"]
+    Run --> Smoke["Container smoke client<br/>health and one tenant A RAG query"]
+    Smoke --> Stop["Logs and cleanup<br/>container removed"]
+    Image -.-> NoPublish["No registry push<br/>no deployment"]
+```
+
+- **CI is verification only.** It runs on pushes to `main`, pull requests, and manual dispatch with a read-only token and no secrets. The image it builds exists only on the runner and is discarded with it.
+- **The runtime is unchanged.** The container runs the same `app.main:app` as `make run`, without `--reload`: one Uvicorn process, in-memory stores, the committed synthetic fixtures, static demo identities, and no outbound calls. A container restart resets all state exactly like a process restart.
+- **Source, not a wheel.** The image installs only the dependency wheels and copies `app/` and `data/` to `/app`, because the fixture paths are resolved relative to the `app/` package.
+- **The local boundary is the network binding.** Compose and the documented `docker run` publish to `127.0.0.1` only. The demo identity header is not authentication, so the binding is what keeps the service private.
+
+Operational details and limits are in [`container.md`](container.md).
+
+## Scope beyond Week 4
+
+- **Week 4 (this milestone):** local Docker packaging, Compose, CI verification, and release documentation. The demo recording is a human step that follows [`recording-guide.md`](recording-guide.md).
+- **Separate future decisions, not commitments:** PostgreSQL-backed workflows, idempotency, and audit with optimistic locking; a durable vector index; real authentication and an identity provider; an opt-in real embedding model and LLM adapter (disabled by default, never used in tests) measured on the same versioned evaluation dataset; a queryable RAG audit endpoint; backoff, DLQ, and circuit breakers; OpenTelemetry; rate limiting; deployment and production hardening.

@@ -1,8 +1,8 @@
 # Demo-Plan Script — 3–5 Minute Walkthrough
 
-> **Do not record a video yet.** Recording is Week 4 work. This document is a script for a future recording session. It can also be read aloud as a live walkthrough during interviews or portfolio reviews.
+> **Week 4:** the focused 3–5 minute recording plan for the packaged demo is [`recording-guide.md`](recording-guide.md), and the checks to run before recording are in [`release-checklist.md`](release-checklist.md). This document keeps the detailed Week 1–3 sequences that the guide draws from. It can also be read aloud as a live walkthrough during interviews or portfolio reviews. No recording is included in the repository.
 
-All commands assume `make run` in terminal A and the shell variables from the README's [`curl` walkthrough](../README.md#curl-walkthrough) in terminal B:
+All commands assume `make run` (or `docker compose up --build`; the API is the same at `http://127.0.0.1:8000`) in terminal A and the shell variables from the README's [`curl` walkthrough](../README.md#curl-walkthrough) in terminal B:
 
 ```bash
 BASE=http://127.0.0.1:8000
@@ -136,7 +136,7 @@ curl -s $BASE/api/v1/workflows/$WORKFLOW_ID/audit -H "$OPERATOR" | python -m jso
 
 > "There is also a small local stdio MCP server, started with `make mcp`. It has exactly one read-only tool that searches the synthetic catalog, with strict bounded inputs and logs on stderr only."
 
-> "What this is not: no real authentication, no real integrations, no durable storage, single process only, and the timeout is cooperative. Next is the Week 3 RAG lab. Week 4 adds Docker, CI, and this recording."
+> "What this is not: no real authentication, no real integrations, no durable storage, single process only, and the timeout is cooperative. Next is the Week 3 RAG lab. Week 4 packages all of this in a local container with CI verification."
 
 Optional failure-path callout if time allows: "Transient, permanent, and timeout adapter failures are covered by deterministic tests. Only transient errors retry, bounded at two attempts, and a timeout never commits a mock record." Show `tests/test_tool_executor_resilience.py` briefly.
 
@@ -154,7 +154,7 @@ Same terminals and shell variables. Nothing here calls a model or leaves the mac
 | R6. No evidence and contradictory evidence | 2:35–3:10 |
 | R7. Injection-like content | 3:10–3:40 |
 | R8. Evaluation command, metrics, limits | 3:40–4:30 |
-| R9. Week 4 roadmap | 4:30–4:45 |
+| R9. Packaging and what comes next | 4:30–4:45 |
 
 ### R1. Disclaimer
 
@@ -252,6 +252,6 @@ python -m app.rag.evaluation --dataset data/evaluation/rag_evaluation.v1.json --
 
 Open `docs/evaluation.md` at "How to read these numbers".
 
-### R9. Week 4 roadmap
+### R9. Packaging and what comes next
 
-> "Week 4 packages this: Docker, CI, and the recorded demo. A real embedding model and a real LLM adapter are later work, opt-in and measured against this same dataset, along with durable storage and real authentication."
+> "Week 4 packages this in a local Docker image with Compose, and a CI workflow runs the tests, both evaluations, and a container smoke test. It is still local: nothing is deployed or published. A real embedding model, a real LLM adapter, durable storage, and real authentication would each be a separate decision, opt-in and measured against this same dataset."

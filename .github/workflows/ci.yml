@@ -1,0 +1,117 @@
+# Verification only: lint, tests, RAG evaluation, and a local container smoke test on the runner.
+# No secrets, no registry, no artifact upload, no deployment.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch or pull request supersedes the older run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  quality:
+    name: quality (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install project with dev extras
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Ruff lint
+        run: python -m ruff check .
+      - name: Ruff format check
+        run: python -m ruff format --check .
+      - name: Pytest
+        run: python -m pytest -q
+
+  rag-evaluation:
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install project with dev extras
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Validate corpus and summarize the in-memory index
+        run: python -m app.rag.index_cli
+      - name: Evaluate with lexical reranking
+        run: python -m app.rag.evaluation --dataset data/evaluation/rag_evaluation.v1.json --reranker lexical
+      - name: Evaluate without reranking
+        run: python -m app.rag.evaluation --dataset data/evaluation/rag_evaluation.v1.json --reranker none
+      - name: Confirm no generated files in the workspace
+        run: test -z "$(git status --porcelain)"
+
+  container-smoke:
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build local image
+        run: docker build --tag ai-coo-real-estate-lab:ci .
+      - name: Require a non-root configured user
+        run: |
+          user="$(docker image inspect ai-coo-real-estate-lab:ci --format '{{.Config.User}}')"
+          echo "Configured user: ${user:-<empty>}"
+          case "${user%%:*}" in
+            "" | root | 0) echo "The image must set a non-root USER." >&2; exit 1 ;;
+          esac
+      - name: Run hardened container and smoke test
+        run: |
+          # No --rm, so a container that exits early still has readable logs; the trap
+          # prints at most 100 lines and removes the container on success or failure.
+          cleanup() {
+            echo "--- container logs (last 100 lines) ---"
+            docker logs --tail 100 ai-coo-real-estate-lab-ci 2>&1 || true
+            docker rm --force ai-coo-real-estate-lab-ci > /dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker run --detach \
+            --name ai-coo-real-estate-lab-ci \
+            --publish 127.0.0.1:8000:8000 \
+            --read-only \
+            --tmpfs /tmp \
+            --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            ai-coo-real-estate-lab:ci
+          python scripts/container_smoke.py --base-url http://127.0.0.1:8000
+          docker exec ai-coo-real-estate-lab-ci python -c "import os, sys; print('uid', os.getuid()); sys.exit(os.getuid() == 0)"

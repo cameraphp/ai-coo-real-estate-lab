@@ -68,12 +68,13 @@ def build_app(
 
     app = FastAPI(
         title="ai-coo-real-estate-lab",
-        version="0.3.0",
+        version="0.4.0",
         description=(
-            "Week 3: Controlled local demo of a real-estate operations assistant with "
+            "Week 4: Controlled local demo of a real-estate operations assistant with "
             "synthetic data, a human approval gate, local mock tools, demo tenant/role "
             "boundaries, idempotency, a queryable audit trail, and a deterministic "
-            "tenant-scoped RAG lab. No external model, service, or side effect."
+            "tenant-scoped RAG lab, packaged for local container runs. No external model, "
+            "service, or side effect."
         ),
     )
 
